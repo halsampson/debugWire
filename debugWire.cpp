@@ -53,14 +53,13 @@ void openSerial() {
 	if (!SetCommTimeouts(hCom, &timeouts)) exit(-4);
 }
 
-void setBaudRate(int baud) {
+bool setBaudRate(int baud) {
   DCB dcb = { 0 };
 	dcb.DCBlength = sizeof(DCB);
 	dcb.BaudRate = baud;
 	dcb.ByteSize = 8;
 	dcb.fBinary = TRUE;
-	if (!SetCommState(hCom, &dcb)) exit(-3);
-  //GetCommState(hCom, &dcb);
+	return SetCommState(hCom, &dcb);
 }
 
 void commErrs() {
@@ -651,7 +650,7 @@ void LoadBinary(HANDLE CurrentFile) {
   PC = 0;
 }
 
-void getSignature() {  
+int getSignature() {  
   DwSend(0xF3);  // read signature
 
   u8 sig[2];
@@ -661,6 +660,8 @@ void getSignature() {
   for (int i=0; i < sizeof sig; ++i)
     printf("%X ", sig[i]);
   printf("\n");
+
+  return ((int)sig[1] << 8) | sig[0];
 }
 
 const int NumRegs = 32; // acutally 32
@@ -680,15 +681,17 @@ int main() {
     rxFlush(-2);
     SerialBreak(1);
 
-  #if 0
-    DwSend(0x80); // set baud, expect 0x55
-    setBaudRate(18432000 / 16);
-    SerialSync();
+    getSignature();
+
+  #if 0 // why doesn't work?  -- timing?
+    DwSend(0x82); // set baud, expect 0x55
+    Sleep(16); // make sure sent before baud change
+    rxFlush(-11);
+    setBaudRate(18432000 / 64);  
   #endif
 
     getSignature();
     getSignature();
-    
 
   #if 0
     u8 resp;  
@@ -697,9 +700,7 @@ int main() {
     SerialReceive(&resp, 1);
   #endif
 
-    readAllRegs();  // fails to send byte D0 -- TODO: diagnose -- 
-    
-    // sometimes see 0x55 @ 1.1 MHz --> baud divisor changed by mistaken 0x80 from collision??
+    readAllRegs();  // fails to send byte D0 -- TODO: diagnose -- sometimes see 0x55 @ 1.1 MHz --> baud divisor changed!! *****
   
   DwSend(7); // reset
   SerialSync();
