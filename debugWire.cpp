@@ -6,8 +6,10 @@
 // TODO: fix GO
 // TODO: cleanup
 
-#define F_CPU (126150 * 128)   // or 18432000  TODO: determine
-#define COM_PORT "COM16"
+#define F_CPU (126000 * 128) // from freqOutDWire() -> counter;  or 18432000  
+   // TODO: auto-adjust to 0x55 break response
+
+#define COM_PORT "COM16" // CP2102 debugWire-1
 
 #include <Windows.h>
 #include <cstdint>
@@ -352,6 +354,12 @@ void DwSetPC(u16 pc) {
   u8 SetPC[] = {0xD0, hi(pc) | AddrFlag(), lo(pc)};
   DwSend(SetPC, sizeof SetPC);
 }
+
+u16 DwGetPC() {
+  DwSend(0xF0);
+  return DwReadWord();
+}
+
 void DwSetBP(u16 bp) {
   u8 SetBP[] = {0xD1, hi(bp) | AddrFlag(), lo(bp)};
   DwSend(SetBP, sizeof SetBP);
@@ -677,37 +685,49 @@ u8 regs[] = {
   0x80, 0x00, 0x03, 0x01, 0x11, 0x00, 0x58, 0x00, 
 };
 
+void stepTo(u16 stopAt, int numSteps = 100) { 
+  do {
+    DwSend(0x5A); // single step context
+		DwSend(0x31); // single step
+    SerialSync();
+    u16 PC = DwGetPC() - 1; // PC is ahead by 1
+    DwSetPC(PC);
+    printf("%4X ", PC);
+		if (PC == stopAt) 
+			break;
+	} while (--numSteps);
+}
+
+void step() {
+  stepTo(0, 1);
+}
+
 int main(int argc, char *argv[]) { 
   loadHex(); // from stdin
 
   openSerial();
  
-  setBaudRate(F_CPU / 128);  
-
   txFlush();
   rxFlush(-2);
-  SerialBreak();
+  SerialBreak(); // connect 
 
   getSignature();
-  DwGetRegs(0, regs, 32);
+  // DwGetRegs(0, regs, 32);
 
-#if 0 
+#if 0
   setFastBaud();
   getSignature();
   getSignature();
 #endif
 
-  
-  reset();
-  printf("\n");
-
-  WriteFlash(0, FlashBuffer, maxAddr);
+  // WriteFlash(0, FlashBuffer, maxAddr);
 
 #if 0
   reset();
   SerialBreak();
 #endif
 
+#if  0
   unsigned char datapp[] = {
     // 0xD2, 0x95, 0xE8, 0x33, // page erase
     // 0x00, 0x66, 0xE6, 0x18, 0x55,  // reconnect
@@ -729,22 +749,57 @@ int main(int argc, char *argv[]) {
 
   DwSend(0x66);
 
-#if  1
   u8 cw[2];
   DwSend(0xE6); // read control 
   DwReceive(cw, 1);  // get 0, not 0x18
 
   DwSend(0xF0); // read control word  
   DwReceive(cw, sizeof cw);
-#endif
 
   DwSetRegs(0, regs, 32);
+  
   // also  other internal state: CPU regs, ... !!!! TODO
+#endif
 
-  DwSend(0x40); // Timers enable, Breakpoint disable
+
   DwSetPC(0); 
-  DwSend(0x30); // Go -- need registers reset to power cycle state
+#if 1
+  stepTo(0x2E); // to 1st PINB = LED
+  stepTo(0x33);
+  // step(); // toggles LED
 
+#endif
+  DwSend(0x40); // Timers enable, Breakpoint disable
+  DwSend(0x30); // Go -- Fails  TODO
+
+  unsigned char go[] = {  // TxOnly
+    0xD0, 0x00, 0x00,  // PC = 0
+    0x60,       // breakpoints enabled
+    0x30,       // go
+  };
+  // DwSend(go, sizeof go);
+
+  // DwSend(0x06);
 }
 
+unsigned char brkp[] = {  // TxOnly
+  0x00, 0xF0,
+  0xD0, 0x00, 0x1C, 
+  0xD1, 0x00, 0x20, 
+  0x66, 0xC2, 0x01, 0x20, 
+  0x64, 0x64, 0xD2, 0xB5, 
+  0xE2, 0x23, 0x56, 0x64, 
+  0xD2, 0xB5, 0xF2, 0x23, 0x00, 
+  0xD0, 0x00, 0x00, 
+  0xD1, 0x00, 0x08, 
+  0x66, 0xC2, 0x02, 0x20
+};
 
+// dwdebug g command on Ubuntu works OK *** --- get log (simpler than Microchip Studio)   *******
+//   dwdebug device ttyUSB4 126150
+
+// try single stepping 0x5A 0x31s, watch PC progress,
+
+// dWire log decoder to check GO sequence?
+// MPS430 edge timing logger?
+// transistors to separate dWire directions -- see circuits
