@@ -172,7 +172,10 @@ void SerialSendBytes(const u8 *out, int outlen) {
     if (echoed[i] != out[i]) {
       Ws("Echo "); Wd(i+1,1); Ws(" of "); Wd(outlen,1);
       Ws(": Sent "); Wx(out[i],2); Ws(" got "); Wx(echoed[i],2); Wl();
-      if (++echoErrors > 10) exit(3);
+      if (++echoErrors > 10) {
+        Sleep(5000);
+        exit(3);
+      }
     }
   }
 }
@@ -266,7 +269,7 @@ int SerialReceive(u8 *in, int inlen) {
   return inlen;
 }
 
-int deviceType = 10; // TODO: serach for signature
+int deviceType = 10; // TODO: search for signature
 
 struct Characteristic {  // Device specific characteristics
   const char *name;
@@ -609,15 +612,19 @@ void setBaud() { // OK
 }
 
 void setFastBaud() {  // TODO: debug ************
-  DwSend(0x82); // set baud, expect 0x55
+#if 1
+  DwSend(0xA0); // set baud, expect 0x55
   txFlush();
+  setBaudRate(F_CPU / 8); // CP2102 table 2 MHz
+#else
+  DwSend(0xA1); // set baud, expect 0x55
+  txFlush();
+  setBaudRate(F_CPU / 4);
+#endif
   // need finer control of timing to work right   TODO
-  setBaudRate(F_CPU / 64);
   // SerialSync(); // too late to catch 0x55 **** 
 	commErrs(true);
 }
-
-
 
 u8 FlashBuffer[MaxFlashSize];
 
@@ -715,11 +722,13 @@ int main(int argc, char* argv[]) {
   WriteFlash(0, FlashBuffer, maxAddr);
 
   DwSetPC(0);
-  DwSend(0x40); // Timers enable, Breakpoint disable
+  DwSend(0x40); // Timers enabled, Breakpoint disabled
   DwSend(0x30); // Go
   txFlush();
 
-	Sleep(1000);
+	Sleep(5000);  // to see results
+
+	return 0;
 }
 
 
