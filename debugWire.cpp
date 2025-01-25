@@ -5,9 +5,9 @@
 
 // TODO: cleanup
 
-// CP2102 baud rate aliases are strange! Beware Hi/Lo limits
-
 #define COM_PORT "COM16" // CP2102 debugWire-1
+
+#define _CRT_SECURE_NO_WARNINGS
 
 #include <Windows.h>
 #include <cstdint>
@@ -52,16 +52,15 @@ void openSerial() {
 	if (!SetCommTimeouts(hCom, &timeouts)) exit(-4);
 }
 
-// CP2102 aliases:
-//   18432000 / 2^N
-//   16000000 / 2^N
 
 bool setBaudRate(int baud) {
-  switch (baud) {  // CP2102 alias config; (1M baud max guaranteed)
+  // TODO: try FTDI, CH340
+  switch (baud) {
+    // CP2102 configured aliases for 1600000 and 18432000 / 2^N; only guaranteed to work up to 1M baud
     case 24000000: baud = 1800; break;
     case  8000000: baud = 300; break; 
-    case  4608000: baud = 14400; break;
-		case  2304000: baud = 7200; break;
+    case  4608000: baud = 14400; break;  // off 4.17% --> bad
+		case  2304000: baud = 7200; break;   // off 4.17% --> bad
 		case  1152000: baud = 4000; break;
     case  1000000: baud = 1053258; break;       
   }
@@ -104,18 +103,6 @@ int rxRdy() {
 	return cs.cbInQue;
 }
 
-// replace with printfs:
-
-#define Wflush()
-
-void Wc(char c) { printf("%c", c);}
-void Wd(s64 i, int w) { printf("%d", i);}
-void Ws(const char *s) { printf("%s", s);}
-void Wr(void) { Wc('\r');}
-void Wl(void) { Ws("\r\n");}
-void Wsl(const char *s) {Ws(s); Wl();}
-void Wx(u64 i, int w) { printf("%X", i);}
-
 void SerialWrite(const u8 *bytes, int length) {
   WriteFile(hCom, bytes, length, NULL, NULL);
 }
@@ -127,7 +114,11 @@ int SerialRead(u8 *buf, int len) {
     ReadFile(hCom, buf + totalRead, len - totalRead, &lengthRead, NULL);
     if (lengthRead == 0) {
       printf("\nSerialRead expected %d bytes, got %d\n", len, totalRead); 
-      if (totalRead) {Ws(":\n  "); for (int i=0; i<totalRead; i++) {Wx(buf[i], 2); Ws(" ");}}
+      if (totalRead) {
+        printf(":\n  ");
+        for (int i = 0; i < totalRead; i++)
+          printf("%2X ", buf[i]);
+      }
       break;
     }
     totalRead += lengthRead;
@@ -153,7 +144,7 @@ int SerialReadByte() {
   DWORD length;
   bool result = ReadFile(hCom, &byte, 1, &length, NULL);
   if (!result || length != 1) {
-    Ws("-");
+    printf("-");
     return 0xDE;
   }
   return byte;
@@ -426,7 +417,7 @@ u8 ReadSPMCSR(void) {
   DwSend(0x64);        // Set up for single step mode
   DwIn(30, SPMCSR());         // in r30,SPMCSR
   DwGetRegs(30, &spmcsr, 1);  // spmcsr := r30
-  //Ws(" SPMCSR $"); Wx(spmcsr,2); Wsl(".");
+  //printf(" SPMCSR $"); Wx(spmcsr,2); Wsl(".");
   return spmcsr;
 }
 
@@ -496,7 +487,7 @@ void ProgramPage(u16 a) {
   DwOut(SPMCSR(), 29);                       // out SPMCSR,r29 (PGWRT)
   if (BootSect()) {
     DwInst(0x95E8);                          // spm
-    while ((ReadSPMCSR() & 0x1F) != 0) {Wc('.'); Wflush();} // Wait while programming busy
+    while ((ReadSPMCSR() & 0x1F) != 0) printf("."); // Wait while programming busy
   } else {
     const u8 SpmBreak[] = {0xD2, 0x95, 0xE8, 0x33};
     DwSend(SpmBreak, sizeof SpmBreak);   // spm and break
@@ -505,9 +496,8 @@ void ProgramPage(u16 a) {
 }
 
 
-void ShowPageStatus(u16 a, const char *msg) {
-  Ws("$"); Wx(a,4); Ws(" - $"); Wx(a+PageSize()-1,4);
-  Wc(' '); Ws(msg); Ws(".                "); Wr();
+void ShowPageStatus(u16 a, const char* msg) {
+  printf("Page %4X %s\r", a, msg);
 }
 
 
@@ -634,12 +624,14 @@ u8 FlashBuffer[MaxFlashSize];
 void LoadBinary(HANDLE CurrentFile) {
   DWORD length;
   ReadFile(CurrentFile, FlashBuffer, sizeof(FlashBuffer), &length, NULL);
-  if (length == 0) Ws("File is empty.");
+  if (length == 0) printf("File is empty.");
 
-  Ws("Loading "); Wd(length,1); Wsl(" flash bytes from binary image file.");
+  printf("Loading %d bytes from binary file.", length);
   WriteFlash(0, FlashBuffer, length);
 }
 
+
+FILE* hexFile;
 
 u8 chkSum;
 int pair;
@@ -648,7 +640,7 @@ u8 GetByte() { // convert hex to binary:  sed -e 's/://'  -e 's/../\\x&/g')"
   u8 data = 0;
 
   while (1) {
-    int ch = getchar(); // from stdin
+    int ch = fgetc(hexFile);
     if (ch == EOF) 
       exit(5);
     if (ch == ':')
@@ -725,7 +717,16 @@ bool checkSignature() {
 }
 
 int main(int argc, char* argv[]) {
-  loadHex(); // from stdin
+  if (argc > 1) {
+		char hexPath[256];
+		sprintf(hexPath, "C:/Users/Admin/Documents/Atmel Studio/7.0/%s/%s/Debug/%s.hex", argv[1], argv[1], argv[1]);
+    hexFile = fopen(hexPath, "r");
+    if (!hexFile) {
+      printf("Can't open %s\n", hexPath);
+      return 1;
+    }
+  } else hexFile = stdin;
+  loadHex();
 
   openSerial();
   rxFlush();
