@@ -14,6 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <conio.h>
 
 #define windows
 #define FileHandle FILE*
@@ -26,7 +27,7 @@ typedef uint16_t u32;
 typedef int64_t s64;
 typedef uint64_t u64;
 
-int F_CPU[] = { 18432000, 16000000, /* 1000000 */}; // or 128 * freqOutDWire() --> counter
+int F_CPU[] = { 24000000, 16000000, 18432000, /* 1000000 */}; // or 128 * freqOutDWire() --> counter
 const int NumCpuHz = sizeof(F_CPU) / sizeof(F_CPU[0]);
 int cpuHzIdx = 0;
 int dWdivisor = 128; // default
@@ -56,13 +57,21 @@ void openSerial() {
 bool setBaudRate(int baud) {
   // TODO: try FTDI, CH340
   switch (baud) {
-    // CP2102 configured aliases for 1600000 and 18432000 / 2^N; only guaranteed to work up to 1M baud
-    case 24000000: baud = 1800; break;
-    case  8000000: baud = 300; break; 
-    case  4608000: baud = 14400; break;  // off 4.17% --> bad
-		case  2304000: baud = 7200; break;   // off 4.17% --> bad
-		case  1152000: baud = 4000; break;
-    case  1000000: baud = 1053258; break;       
+    // CP2102 configured aliases for F_CPU: 1600000, 24000000, and 18432000 / 2^N; only guaranteed to work up to 1M baud
+    case  1000000: baud = 1053258; break; 
+		case  2880000: baud = 256000; break;
+
+    case 24000000: baud = 76800; break;
+		case 12000000: baud = 64000; break;
+    case  8000000: baud = 56000; break; 
+		case  6000000: baud = 51200; break;
+    case  4608000: baud = 28800; break;  // off 4.17% --> bad
+		case  3000000: baud = 16000; break;
+
+		case  2304000: baud = 14400; break;   // off 4.17% --> bad
+		case  1500000: baud =  7200; break;
+		case  1152000: baud =  4000; break;      
+		case   750000: baud =  1800; break;
   }
 
   DCB dcb = { 0 };
@@ -735,11 +744,11 @@ int main(int argc, char* argv[]) {
   // TODO: break on first checkSignature()
 
   for (int i = 100; --i;)
-    if (checkSignature()) 
-      break;
-
-	setBaud(4); // 2 OK with 16 MHz; +4.17% error with 18.432 MHz
-	checkSignature(); 
+    checkSignature();
+     
+	// setBaud(3); // 2 OK with 16 MHz
+  if (getSignature() != 0x930B)
+    _getch();
 
   txFlush();
   rxFlush();
