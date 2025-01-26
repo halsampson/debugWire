@@ -99,7 +99,8 @@ void commErrs(bool breakExpected) {
       case 0x18 :
         if (breakExpected) 
 					commError = false; 
-        else printf("Break\n");
+        else 
+          printf("Break\n");
         break;
       default : printf("CommErr %X ", commErrors); break;
     }
@@ -139,7 +140,7 @@ int SerialRead(u8 *buf, int len) {
 }
 
 void rxFlush() {
-  commErrs(false);
+	commErrs(true);  // TODO: break sometimes expected
 
   while (1) {  
     if (!rxRdy()) return;
@@ -211,6 +212,7 @@ u8 syncBytes[256];
 u8 syncIdx;
 
 bool SerialSync() {  // after break, reset, single step, ...
+  commErrs(true); 
   txFlush();
 	bool got55 = false;
 
@@ -508,17 +510,17 @@ void ProgramPage(u16 a) {
   DwOut(SPMCSR(), 29);                       // out SPMCSR,r29 (PGWRT)
   if (BootSect()) {
     DwInst(0x95E8);                          // spm
-    while ((ReadSPMCSR() & 0x1F) != 0) printf("."); // Wait while programming busy
+    // while ((ReadSPMCSR() & 0x1F) != 0) printf("."); // Wait while programming busy
   } else {    
     DwSend(SpmBreak, sizeof SpmBreak);   // spm and break
-		Sleep(4); // Wait for programming to complete
-    DwSync();
   }
+  Sleep(4); // Wait for programming to complete
+  DwSync();
 }
 
 
 void ShowPageStatus(u16 a, const char* msg) {
-  printf("Page %4X %s\r", a, msg);
+  printf("Page %4X %s      \r", a, msg);
 }
 
 
@@ -536,9 +538,12 @@ void WriteFlashPage(u16 a, const u8 *buf) {
     return;
   }
 
-  int erase = 0;
-  for (int i=0; i<PageSize(); i++) 
-    if (~page[i] & buf[i]) {erase=1; break;}
+  bool erase = false;
+  for (int i = 0; i < PageSize(); i++) 
+    if (~page[i] & buf[i]) {
+      erase= true; 
+      break;
+    }
 
   if (erase) {
     ShowPageStatus(a, "erasing");
@@ -547,9 +552,9 @@ void WriteFlashPage(u16 a, const u8 *buf) {
 
   memset(page, 0xff, PageSize());
   if (memcmp(buf, page, PageSize()) == 0) 
-    return;
+		return; // blank page
 
-  ShowPageStatus(a, "loading page buffer");
+  ShowPageStatus(a, "load buffer");
   LoadPageBuffer(a, buf);
 
   ShowPageStatus(a, "programming");
@@ -753,7 +758,6 @@ int main(int argc, char* argv[]) {
   rxFlush();
 
 	SerialBreak(); // connect to target
-  // TODO: break on first checkSignature()
 
   for (int i = 100; --i;)
     checkSignature();
