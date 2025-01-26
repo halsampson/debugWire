@@ -18,7 +18,7 @@
 
 #define windows
 #define FileHandle FILE*
-#define Assert(a) if (!(a)) printf("Assert! %s", a);
+#define Assert(a) if (!(a)) printf("Assert! %s", #a);
 #define Fail(msg) printf(msg)
 
 typedef uint8_t u8;
@@ -53,8 +53,11 @@ void openSerial() {
 	if (!SetCommTimeouts(hCom, &timeouts)) exit(-4);
 }
 
+int baudRate;
 
 bool setBaudRate(int baud) {
+  baudRate = baud;
+
   // TODO: try FTDI, CH340
   switch (baud) {
     // CP2102 configured aliases for F_CPU: 1600000, 24000000, and 18432000 / 2^N; only guaranteed to work up to 1M baud
@@ -223,18 +226,26 @@ bool SerialSync() {  // after break, reset, single step, ...
 	return got55;
  }
 
-bool SerialBreak() { // 9 bit times at baud rate < 1ms
+bool SerialBreak() { // > 9 bit times at baud rate
 
-	// TODO: or send a null at lower baud rate
-#ifdef windows
-  SetCommBreak(hCom);
-  // usleep(1000000 * (9 + 1) * 128 / F_CPU[cpuHzIdx]);
-  ClearCommBreak(hCom);
+#if 0
+	int savedBaudRate = baudRate;
+	setBaudRate(38400);  // lower baud rate for break
+  u8 null = 0;
+  WriteFile(hCom, &null, 1, NULL, NULL);
+  ReadFile(hCom, &null, 1, NULL, NULL);
+	setBaudRate(savedBaudRate); 
 #else
-  ioctl(port, TCFLSH, TCIOFLUSH);
-  ioctl(port, TIOCSBRK);
-  usleep(1000000 * (9 + 1) * 128 / F_CPU[cpuHzIdx]);
-  ioctl(port, TIOCCBRK);
+  #ifdef windows
+    SetCommBreak(hCom);
+    // usleep(1000000 * (9 + 1) * 128 / F_CPU[cpuHzIdx]);
+    ClearCommBreak(hCom);
+  #else
+    ioctl(port, TCFLSH, TCIOFLUSH);
+    ioctl(port, TIOCSBRK);
+    usleep(1000000 * (9 + 1) * 128 / F_CPU[cpuHzIdx]);
+    ioctl(port, TIOCCBRK);
+  #endif
 #endif
 
   return SerialSync();
@@ -337,8 +348,8 @@ int  EECR(void)        {return CurrentCharacteristics()->EECR;}
 int  EEDR(void)        {return EECR()+1;}
 int  EEARL(void)       {return EECR()+2;}
 int  EEARH(void)       {return CurrentCharacteristics()->EEARH;}
-int  SPMCSR(void)      {return 0x37;} // SPMCSR is at the same address on all devices
-int  AddrFlag(void)    {return (FlashSize() < 8192) ? 0x10 : 0;} // Flag to include when setting PC or BP high byte
+u8  SPMCSR(void)       {return 0x37;} // SPMCSR is at the same address on all devices
+u8  AddrFlag(void)     {return (FlashSize() < 8192) ? 0x10 : 0;} // Flag to include when setting PC or BP high byte
 
 enum {MaxFlashPageSize = 128, MaxFlashSize = 32768, MaxSRamSize = 2048};
 
@@ -458,6 +469,7 @@ void DwReadFlash(int addr, int len, u8 *buf) {
   }
 }
 
+const u8 SpmBreak[] = {0xD2, 0x95, 0xE8, 0x33};
 
 void EraseFlashPage(u16 a) { // a = byte address of first word of page
   Assert((a & (PageSize()-1)) == 0);
@@ -467,8 +479,8 @@ void EraseFlashPage(u16 a) { // a = byte address of first word of page
   DwSetPC(BootSect());                       // Set PC that allows access to all of flash
   DwSend(0x64);                              // Set up for single step mode
   DwOut(SPMCSR(), 29);                       // out SPMCSR,r29 (select page erase)
-  const u8 DoPageErase[] = {0xD2, 0x95, 0xE8, 0x33};
-  DwSend(DoPageErase, sizeof DoPageErase); // SPM
+  DwSend(SpmBreak, sizeof SpmBreak); // SPM
+	Sleep(5); // Wait for erase to complete
   DwSync();
 }
 
@@ -492,14 +504,14 @@ void ProgramPage(u16 a) {
   u8 PageWrite[] = {PGWRT, lo(a), hi(a)};
   DwSetRegs(29, PageWrite, sizeof PageWrite); // r29 = op (page write), Z = first byte address of page
   DwSetPC(BootSect());                       // Set PC that allows access to all of flash
-  DwSend(0x64);                       // Set up for single step mode
+  DwSend(0x64);                              // Set up for single step mode
   DwOut(SPMCSR(), 29);                       // out SPMCSR,r29 (PGWRT)
   if (BootSect()) {
     DwInst(0x95E8);                          // spm
     while ((ReadSPMCSR() & 0x1F) != 0) printf("."); // Wait while programming busy
-  } else {
-    const u8 SpmBreak[] = {0xD2, 0x95, 0xE8, 0x33};
+  } else {    
     DwSend(SpmBreak, sizeof SpmBreak);   // spm and break
+		Sleep(4); // Wait for programming to complete
     DwSync();
   }
 }
@@ -764,6 +776,3 @@ int main(int argc, char* argv[]) {
 
 	return 0;
 }
-
-
-
