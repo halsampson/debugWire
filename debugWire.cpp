@@ -3,9 +3,28 @@
 // Based on https://github.com/dcwbrown/dwire-debug/tree/master
 //  other dWire code https://github.com/dwtk/dwtk/blob/master/debugwire/flash.go  
 
+
+// TODO: measure 0x55 bit times with ~7.5X baud rate:   see BaudTest.cpp
+//   adjust to get 50% 0x80, 50% 0xC0 -- > 1 start bit + 6.5 data bits --> baud * 7.5 
+//   16 MHz / 128 * 7.5 = 937500 baud
+//  
+// TODO: try finer baud rate settings
+  // PL2303HX: 12 MHz * 32 / prescale / {1..255}  > 115200
+     // https://elixir.bootlin.com/linux/v3.10/source/drivers/usb/serial/pl2303.c#L364
+  // CP2104  24 MHz / N 
+  // FTDI 3 MHz / (n + 0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875; n = 2..16384)
+     // 3M, 2M, 24 MHz / N for N >= 16
+     // Special cases n = 0 -> 3 MBaud; n = 1 -> 2 MBaud; Sub-integer divisors between 0 and 2 not allowed.
+  // CP2102: 24 MHz / N >= 8 from 32 entry programmable table   1 MHz max?
+	// CH340:  12 MHz / {1, 2, 8, 16, 64, 128, 512, 1024} / {2..256 or 9..256 when prescale = 1}
+    // stop bit >= 2us
+    // https://github.com/nospam2000/ch341-baudrate-calculation
+
+// Use ATTiny85 as serial bridge; 96 MHz PCK timer to measure bit times
+
 // TODO: cleanup
 
-#define COM_PORT "COM16" // CP2102 debugWire-1
+#define COM_PORT "COM22"
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -15,6 +34,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <conio.h>
+#include <time.h>
 
 #define windows
 #define FileHandle FILE*
@@ -31,6 +51,8 @@ int F_CPU[] = { 24000000, 16000000, 18432000, /* 1000000 */}; // or 128 * freqOu
 const int NumCpuHz = sizeof(F_CPU) / sizeof(F_CPU[0]);
 int cpuHzIdx = 0;
 int dWdivisor = 128; // default
+
+const int Log2BaudDivisor = 7; // 7 default, less to speed up (3 min --> 3 MHz)
 
 HANDLE hCom;
 
@@ -58,17 +80,19 @@ int baudRate;
 bool setBaudRate(int baud) {
   baudRate = baud;
 
-  // TODO: try FTDI, CH340
+  // TODO: try other serial chips
   switch (baud) {
     // CP2102 configured aliases for F_CPU: 1600000, 24000000, and 18432000 / 2^N; only guaranteed to work up to 1M baud
     case  1000000: baud = 1053258; break; 
 		case  2880000: baud = 256000; break;
 
+// > 3M baud don't work
     case 24000000: baud = 76800; break;
 		case 12000000: baud = 64000; break;
     case  8000000: baud = 56000; break; 
 		case  6000000: baud = 51200; break;
     case  4608000: baud = 28800; break;  // off 4.17% --> bad
+
 		case  3000000: baud = 16000; break;
 
 		case  2304000: baud = 14400; break;   // off 4.17% --> bad
@@ -94,7 +118,9 @@ void commErrs(bool breakExpected) {
 		commError |= commErrors != 0;
     switch (commErrors) {
       case 0 : return;
-      case 0x08 : printf("Frame\n"); break;
+      case 0x08 : 
+        printf("Frame\n"); 
+        break;
       case 0x10 : 
       case 0x18 :
         if (breakExpected) 
@@ -182,6 +208,8 @@ int echoErrors;
 void SerialSendBytes(const u8 *out, int outlen) {
   rxFlush();
   WriteFile(hCom, out, outlen, NULL, NULL);
+  FlushFileBuffers(hCom);
+  Sleep(1);
   // Since TxD & RxD share the same wire, everything transmitted echos in the receive buffer (unless there is a collision). 
   // Drain echoed input and check that it is correct.
   u8 echoed[256];
@@ -214,6 +242,7 @@ u8 syncIdx;
 bool SerialSync() {  // after break, reset, single step, ...
   commErrs(true); 
   txFlush();
+  Sleep(18);
 	bool got55 = false;
 
   syncIdx = 0;
@@ -367,6 +396,26 @@ int  DwReceive(u8 *in, int inlen) {
   return SerialReceive(in, inlen);
 }
 
+void setBaud(int log2divisor) { // 3..7
+	// Note that programming flash takes 9ms erase + 4.5ms for 32 words > 70us/byte
+  //   so higher baud rate most useful for flash / SRAM readout check
+
+  if (log2divisor < 4)
+    DwSend(0xA3 - log2divisor);
+  else DwSend(0x80 + log2divisor - 4); // set ATtiny baud
+  dWdivisor = 1 << log2divisor;    // minimum 8 for FTDI (3 MHz max)
+  txFlush(); // checks echo
+
+  setBaudRate(F_CPU[cpuHzIdx] / dWdivisor);
+  // DwSend(0x55);  // echoes FF or 0 - WHY??  TODO
+  const u8 Sync = 0x55;
+	WriteFile(hCom, &Sync, 1, NULL, NULL);
+  if (!SerialSync())
+    printf("sB: no 55\n");
+  Sleep(1);
+	commErrs(true);
+}
+
 void DwSync(void) {
   SerialSync();
 }
@@ -482,7 +531,6 @@ void EraseFlashPage(u16 a) { // a = byte address of first word of page
   DwSend(0x64);                              // Set up for single step mode
   DwOut(SPMCSR(), 29);                       // out SPMCSR,r29 (select page erase)
   DwSend(SpmBreak, sizeof SpmBreak); // SPM
-	Sleep(5); // Wait for erase to complete
   DwSync();
 }
 
@@ -514,13 +562,12 @@ void ProgramPage(u16 a) {
   } else {    
     DwSend(SpmBreak, sizeof SpmBreak);   // spm and break
   }
-  Sleep(4); // Wait for programming to complete
   DwSync();
 }
 
 
 void ShowPageStatus(u16 a, const char* msg) {
-  printf("Page %4X %s      \r", a, msg);
+  printf("Page %4X %s  \r", a, msg);
 }
 
 
@@ -557,8 +604,9 @@ void WriteFlashPage(u16 a, const u8 *buf) {
   ShowPageStatus(a, "load buffer");
   LoadPageBuffer(a, buf);
 
-  ShowPageStatus(a, "programming");
+  ShowPageStatus(a, "program");
   ProgramPage(a);
+  ShowPageStatus(a, "programmed \n");
 
   RenableRWW();
 }
@@ -613,8 +661,11 @@ void WriteFlash(u16 addr, const u8 *buf, int length) {
 
 u16 getSignature() {  
   DwSend(0xF3);  // F3..FF = read signature;  (just start bit)
+  txFlush();
+
   u16 sig = DwReadWord();
-  if (sig != 0x930B) printf("Sig %X\n", sig);
+  if (sig != 0x930B) 
+    printf("Sig %X\n", sig);
   return sig;
 }
 
@@ -625,35 +676,17 @@ void reset() {
   SerialSync();  // ? TODO baud??
 }
 
-void setBaud(int log2divisor) { 
-	// Note that programming flash takes 9ms erase + 4.5ms for 32 words > 70us/byte
-  //   so higher baud rate most useful for flash / SRAM readout check
 
-  if (log2divisor < 4)
-    DwSend(0xA3 - log2divisor);
-  else DwSend(0x80 + log2divisor - 4); // set ATtiny baud
-  dWdivisor = 1 << log2divisor;
-  txFlush(); // checks echo
 
-	setBaudRate(F_CPU[cpuHzIdx] / dWdivisor); // CP2102 table!
-  // DwSend(0x55);  // echoes FF or 0 - WHY??  TODO
-  const u8 Sync = 0x55;
-	WriteFile(hCom, &Sync, 1, NULL, NULL);
-  if (!SerialSync())
-    printf("sB: no 55\n");
-  Sleep(1);
-	commErrs(true);
-}
-
-u8 FlashBuffer[MaxFlashSize];
+u8 flashBuffer[MaxFlashSize];
 
 void LoadBinary(HANDLE CurrentFile) {
   DWORD length;
-  ReadFile(CurrentFile, FlashBuffer, sizeof(FlashBuffer), &length, NULL);
+  ReadFile(CurrentFile, flashBuffer, sizeof(flashBuffer), &length, NULL);
   if (length == 0) printf("File is empty.");
 
   printf("Loading %d bytes from binary file.", length);
-  WriteFlash(0, FlashBuffer, length);
+  WriteFlash(0, flashBuffer, length);
 }
 
 
@@ -688,7 +721,7 @@ u8 GetByte() { // convert hex to binary:  sed -e 's/://'  -e 's/../\\x&/g')"
 int maxAddr;
 
 bool loadHex() {
-  memset(FlashBuffer, 0xFF, sizeof FlashBuffer);
+  memset(flashBuffer, 0xFF, sizeof flashBuffer);
   maxAddr = chkSum = pair = 0; 
   
   while (1) { // process records from .hex file,
@@ -700,7 +733,7 @@ bool loadHex() {
     if (recType)  // 1 = end of file
       return true;
 
-    u8* pBuf = FlashBuffer + addr;
+    u8* pBuf = flashBuffer + addr;
     while (len--) *pBuf++ = GetByte();  // data
 
     GetByte(); // checkSum - should sum back to 0
@@ -733,8 +766,8 @@ bool checkSignature() {
   commError = false; 
   while (getSignature() != 0x930B) { //  || commError) {  // TODO: better baud rate test ********
 		commError = false; 
-    ++cpuHzIdx;
-    cpuHzIdx %= NumCpuHz;
+    //++cpuHzIdx;
+    //cpuHzIdx %= NumCpuHz;
     setBaudRate(F_CPU[cpuHzIdx] / dWdivisor);
 		printf("CpuHz %d\n", cpuHzIdx);
     return true;
@@ -754,6 +787,12 @@ int main(int argc, char* argv[]) {
   } else hexFile = stdin;
   loadHex();
 
+#if 1 // force page write for baud test
+  time_t secs; time(&secs);
+	maxAddr += 2 * PageSize(); // beyond executable code
+  flashBuffer[maxAddr - (secs & (PageSize() - 1))] = 0xFF - (1 << ((secs >> 6) & 7));  // one bit low
+#endif
+
   openSerial();
   rxFlush();
 
@@ -762,14 +801,14 @@ int main(int argc, char* argv[]) {
   for (int i = 100; --i;)
     checkSignature();
      
-	// setBaud(3); // 2 OK with 16 MHz
+	setBaud(Log2BaudDivisor); // TODO: fails flashing?  timing???
   if (getSignature() != 0x930B)
     _getch();
 
   txFlush();
   rxFlush();
 
-  WriteFlash(0, FlashBuffer, maxAddr);
+  WriteFlash(0, flashBuffer, maxAddr);
 
   DwSetPC(0);
   DwSend(0x40); // Timers enabled, Breakpoint disabled
