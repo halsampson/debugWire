@@ -3,7 +3,7 @@
 // Based on https://github.com/dcwbrown/dwire-debug/tree/master
 //  other dWire code https://github.com/dwtk/dwtk/blob/master/debugwire/flash.go  
 
-// TODO: too fast baud --> LoadPageBuffer echo errors (USB buffers??)
+// TODO: too fast baud --> LoadPageBuffer echo errors
 
 
 // Could calibrate OSCCAL and write value to EEPROM
@@ -96,6 +96,8 @@ int rxRdy() {
 	return cs.cbInQue;
 }
 
+#pragma warning(disable : 6031)
+
 void rxFlush() {
   u8 sync[256];
 	DWORD gotBytes;
@@ -104,30 +106,32 @@ void rxFlush() {
 }
 
 void usleep(unsigned long usecs) {
-    HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
-    LARGE_INTEGER dueTime;
-    dueTime.QuadPart = -((long long)usecs * 10); // 100 nanoseconds intervals
+  HANDLE timer = CreateWaitableTimer(NULL, TRUE, NULL);
+	if (!timer) return;
+  LARGE_INTEGER dueTime;
+  dueTime.QuadPart = -((long long)usecs * 10); // 100 nanoseconds intervals
 
-    SetWaitableTimer(timer, &dueTime, 0, NULL, NULL, FALSE);
-    WaitForSingleObject(timer, INFINITE);
-    CloseHandle(timer);
+  SetWaitableTimer(timer, &dueTime, 0, NULL, NULL, FALSE);
+  WaitForSingleObject(timer, INFINITE);
+  CloseHandle(timer);
 }
 
-int deviceType = 10; // TODO: search for signature
+int deviceType; 
 
 struct Characteristic {  // Device specific characteristics
+	// TODO: reorder to group u16s, then u8s
   const char *name;
-  int   signature;
-  int   ioregSize;
-  int   sramSize;
-  int   eepromSize;
-  int   flashSize;  // In bytes
-  int   DWDR;       // DebugWIRE data register, aka MONDR - Monitor data register
-  int   pageSize;   // In bytes
-  int   boot;       // Lowest PC value giving boot section access
-  int   bootflags;  // Where to find the boot sectore control flags, if any
-  int   EECR;       // EEPROM control register index. EEDR and EEARL always follow directly.
-  int   EEARH;      // EEPROM address high (doesn't exist on all devices)
+  u16  signature;
+  u8   ioregSize;
+  u16  sramSize;
+  u16  eepromSize;
+  u16  flashSize;  // In bytes
+  u8   DWDR;       // DebugWIRE data register, aka MONDR - Monitor data register
+  u8   pageSize;   // In bytes
+  u16  boot;       // Lowest PC value giving boot section access
+  u8   bootflags;  // Where to find the boot sectore control flags, if any
+  u8   EECR;       // EEPROM control register index. EEDR and EEARL always follow directly.
+  u8   EEARH;      // EEPROM address high (doesn't exist on all devices)
 } Characteristics[] = {
 //  name             sig   io  sram eeprom flash  dwdr   pg  boot    bf eecr  eearh
   {"ATtiny13",    0x9007,  64,   64,   64,  1024, 0x2E,  32, 0x0000, 0, 0x1C, 0x00},
@@ -156,7 +160,7 @@ struct Characteristic {  // Device specific characteristics
   {"ATmega328P",  0x950F, 224, 2048, 1024, 32768, 0x31, 128, 0x3F00, 2, 0x1F, 0x22},
   {"ATmega328",   0x9514, 224, 2048, 1024, 32768, 0x31, 128, 0x3F00, 2, 0x1F, 0x22},
   {"ATmega32U2",  0x958A, 224, 1024, 1024, 32768, 0x31, 128, 0x0000, 0, 0x1F, 0x22},
-  {0,                  0,   0,    0,    0,     0,    0,   0,      0, 0,    0}
+  {0,                  0,   0,    0,    0,     0,    0,   0,      0, 0,    0,    0}
 };
 
 struct Characteristic *CurrentCharacteristics() {
@@ -164,26 +168,28 @@ struct Characteristic *CurrentCharacteristics() {
   return Characteristics + deviceType;
 }
 const char *Name(void) {return CurrentCharacteristics()->name;}
-int  IoregSize(void)   {return CurrentCharacteristics()->ioregSize;}
-int  SramSize(void)    {return CurrentCharacteristics()->sramSize;}
-int  EepromSize(void)  {return CurrentCharacteristics()->eepromSize;}
-int  FlashSize(void)   {return CurrentCharacteristics()->flashSize;}   // In bytes
-int  PageSize(void)    {return CurrentCharacteristics()->pageSize;}    // In bytes
-int  DWDRreg(void)     {return CurrentCharacteristics()->DWDR;}
-int  DWDRaddr(void)    {return CurrentCharacteristics()->DWDR + 0x20;} // IO regs come after the 32 regs r0-r31
-int  DataLimit(void)   {return 32 + IoregSize() + SramSize();}
-int  BootSect(void)    {return CurrentCharacteristics()->boot;}
-int  BootFlags(void)   {return CurrentCharacteristics()->bootflags;} // 1 = in ext fuse, 2 = in high fuse
-int  EECR(void)        {return CurrentCharacteristics()->EECR;}
-int  EEDR(void)        {return EECR()+1;}
-int  EEARL(void)       {return EECR()+2;}
-int  EEARH(void)       {return CurrentCharacteristics()->EEARH;}
-u8   AddrFlag(void)    {return (FlashSize() < 8192) ? 0x10 : 0;} // Flag to include when setting PC or BP high byte
+u16  SramSize(void)    {return CurrentCharacteristics()->sramSize;}
+u16  EepromSize(void)  {return CurrentCharacteristics()->eepromSize;}
+u16  FlashSize(void)   {return CurrentCharacteristics()->flashSize;}   // In bytes
+u8  IoregSize(void)   {return CurrentCharacteristics()->ioregSize;}
+u16  DataLimit(void)   {return 32 + IoregSize() + SramSize();}
+u16  BootSect(void)    {return CurrentCharacteristics()->boot;}
+u8  BootFlags(void)   {return CurrentCharacteristics()->bootflags;} // 1 = in ext fuse, 2 = in high fuse
+u8  PageSize(void)    {return CurrentCharacteristics()->pageSize;}    // In bytes
+u8  DWDRreg(void)     {return CurrentCharacteristics()->DWDR;}
+u8  DWDRaddr(void)    {return CurrentCharacteristics()->DWDR + 0x20;} // IO regs come after the 32 regs r0-r31
+u8  EECR(void)        {return CurrentCharacteristics()->EECR;}
+u8  EEDR(void)        {return EECR()+1;}
+u8  EEARL(void)       {return EECR()+2;}
+u8  EEARH(void)       {return CurrentCharacteristics()->EEARH;}
+u8  AddrFlag(void)    {return (FlashSize() < 8192) ? 0x10 : 0;} // Flag to include when setting PC or BP high byte
 
 enum {MaxFlashPageSize = 128, MaxFlashSize = 32768, MaxSRamSize = 2048};
 
-#define hi(w) ((w) >> 8)
-#define lo(w)  (w & 0xff)
+#pragma warning(disable : 4838)
+
+#define hi(w) (u8)((w) >> 8)
+#define lo(w) (u8)(w)
 #define littleEnd(w) lo(w), hi(w)
 #define DwSetPC(pc) 0xD0, AddrFlag() | hi(pc), lo(pc)
 #define DwSetBP(bp) 0xD1, AddrFlag() | lo(bp), lo(bp)
@@ -571,7 +577,7 @@ int setDebugWireMode(int divisor = SerialClockHz / 128, bool print = false) { //
 		return SerialClockHz / dWdivisor - 1;
 	}
 
-	return SerialClockHz / avgRunLength / divisor;
+	return (int)((SerialClockHz / avgRunLength + divisor / 2) / divisor);
 }
 
 bool chkSignature() {
@@ -775,9 +781,24 @@ void setRandomBaud() {
 	adjustToDWireBaud(true);
 }
 
+bool findDeviceType() {
+  int signature = getSignature();
+	deviceType = 0;
+	while (1) {
+		u16 sig = Characteristics[deviceType].signature;
+		if (sig == signature) return true;
+		if (!sig) { // end of table
+			printf("Device signature not found\n");
+			return false; 
+		}
+		++deviceType;
+	}
+}
+
 int main(int argc, char* argv[]) {
 	openSerial();  
 	adjustToDWireBaud();
+	findDeviceType();
 
 	// baudTest();
 	// setRandomBaud();
@@ -787,7 +808,7 @@ int main(int argc, char* argv[]) {
 		sprintf(hexPath, "../../../Documents/Atmel Studio/7.0/%s/%s/Debug/%s.hex", argv[1], argv[1], argv[1]);
     hexFile = fopen(hexPath, "r");
 		if (!hexFile)
-			hexFile = fopen(argv[1]);
+			hexFile = fopen(argv[1], "r");
     if (!hexFile) {
       printf("\nCan't open .hex file %s\n", argv[1]);
       return 1;
@@ -795,7 +816,7 @@ int main(int argc, char* argv[]) {
   } else hexFile = stdin;
   loadHex();
 
-#if 1 // force page write for baud test
+#if 0 // force page write for baud test
   time_t secs; time(&secs);
 	maxAddr += 2 * PageSize(); // beyond executable code
   flashBuffer[maxAddr - (secs & (PageSize() - 1))] = 0xFF - (1 << ((secs >> 6) & 7));  // one bit low
@@ -814,6 +835,7 @@ int main(int argc, char* argv[]) {
 	dwSetPC(0); // restart will load preset  OSCCAL
   go();
 
+	CloseHandle(hCom);
 	return 0;
 }
 
