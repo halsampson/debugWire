@@ -786,8 +786,10 @@ int main(int argc, char* argv[]) {
 		char hexPath[256];
 		sprintf(hexPath, "../../../Documents/Atmel Studio/7.0/%s/%s/Debug/%s.hex", argv[1], argv[1], argv[1]);
     hexFile = fopen(hexPath, "r");
+		if (!hexFile)
+			hexFile = fopen(argv[1]);
     if (!hexFile) {
-      printf("\nCan't open %s\n", hexPath);
+      printf("\nCan't open .hex file %s\n", argv[1]);
       return 1;
     }
   } else hexFile = stdin;
