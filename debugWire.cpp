@@ -190,11 +190,12 @@ enum {MaxFlashPageSize = 128, MaxFlashSize = 32768, MaxSRamSize = 2048};
 
 #define hi(w) (u8)((w) >> 8)
 #define lo(w) (u8)(w)
+#define bigEnd(w) hi(w), lo(w)
 #define littleEnd(w) lo(w), hi(w)
-#define DwSetPC(pc) 0xD0, AddrFlag() | hi(pc), lo(pc)
-#define DwSetBP(bp) 0xD1, AddrFlag() | lo(bp), lo(bp)
-#define DwInst(inst) 0x64, 0xD2, hi(inst), lo(inst), 0x23 /* can be slow?? */
-#define DwSlowInst(inst) 0xD2, hi(inst), lo(inst), 0x33  /* break on completion */
+#define DwSetPC(pc) 0xD0, AddrFlag() | bigEnd(pc)
+#define DwSetBP(bp) 0xD1, AddrFlag() | bigEnd(bp)
+#define DwInst(inst) 0x64, 0xD2, bigEnd(inst), 0x23 /* can be slow?? */
+#define DwSlowInst(inst) 0xD2, bigEnd(inst), 0x33  /* break on completion */
 #define DwIn(reg, ioreg)  DwInst(0xB000 | ((ioreg << 5) & 0x600) | ((reg << 4) & 0x01F0) | (ioreg & 0x000F))
 #define DwOut(ioreg, reg) DwInst(0xB800 | ((ioreg << 5) & 0x600) | ((reg << 4) & 0x01F0) | (ioreg & 0x000F))
 #define DwSetReg(reg, val) DwIn(reg, DWDRreg()), (val)
@@ -328,26 +329,59 @@ void RenableRWW(void) {
 		storeProgMemOp(RWWSRE, 0); 
 }
 
-void DwReadFlash(int addr, int len, u8 *buf) {
+enum {SRAM = 0, Regs = 1, Flash = 2, Write = 4}; // region | Write
+
+// Do not read/write Reg addresses 30, 31 (Z), or DWDR as these interfere
+void DwReadWriteRegion(u8 region, int addr, int len) {
+	u8 readWriteRegion[] = {
+		DwSetZ(addr),
+		DwSetPC(BootSect()),
+		DwSetBP(BootSect() + 2 * len),
+		0x66, 0xC2, region, 0x20 // Start data area read/write
+	};
+	DwSend(readWriteRegion, sizeof readWriteRegion);
+}
+
+void DwReadData(u8 region, int addr, int len, u8 *buf) {
+	DwReadWriteRegion(region, addr, len);
+	Sleep(16); // ??
+	DWORD gotBytes;
+	ReadFile(hCom, buf, len, &gotBytes, NULL);
+	if (gotBytes != len) printf("Got %d! ", gotBytes);
+}
+
+void DwWriteData(u8 region, int addr, int len, u8* buf) {  // SRAM or Regs
+	DwReadWriteRegion(Write | region, addr, len);
+	DwSend(buf, len);
+}
+
+void DwWriteSRAM(int addr, int len, const u8 *buf) {
+	u8 writeSRAM[] = {
+		DwSetZ(addr),
+		DwSetBP(3),
+		0x66, 0xC2, Write | SRAM
+	};
+	DwSend(writeSRAM, sizeof writeSRAM);
+
+  int limit = addr + len;
+  while (addr < limit) {
+		u8 writeByte[] = { DwSetPC(1), 0x20, *buf++ }; // Write one byte and increment Z
+		DwSend(writeByte, sizeof writeByte);
+    addr++;
+  }
+}
+
+void DwReadFlash(int addr, int len, u8 *buf) {  // only needed if (BootSect() != 0) ??
   int limit = addr + len;
   if (limit > FlashSize()) printf("Read past end of flash\n");
 
   while (addr < limit) {
     int length = min(limit - addr, 64);      // Read no more than 64 bytes at a time so PC remains in valid address space.
-    u8 readFlash64[] = {
-      DwSetZ(addr),                          // Z := First address to read
-      DwSetPC(BootSect()),                   // Set PC that allows access to all of flash
-      DwSetBP(BootSect() + 2 * length),      // Set BP to load length bytes (PC increments by 2s?)
-      0x66, 0xC2, 2, 0x20
-    };
-    DwSend(readFlash64, sizeof readFlash64);
-		Sleep(16);
-    ReadFile(hCom, buf, length, NULL, NULL);
+		DwReadData(Flash, addr, length, buf);
     addr += length;
     buf  += length;
   }
 }
-
 
 void LoadPageBuffer(u16 addr, const u8* buf) {
   u8 setPageAddr[] = { DwSetPC(BootSect()), DwSetRegs(29, 3), SPMEN, littleEnd(addr), };  // r29 := op (write next page buffer word), Z = first byte address of page
@@ -360,7 +394,7 @@ void LoadPageBuffer(u16 addr, const u8* buf) {
       DwSetReg(0, *buf++), // r0 := low byte,
 			DwSetReg(1, *buf++), // r1 := high byte
       DwOut(SPMCSR, 29),   // out SPMCSR,r29 = SPMEN (write next page buffer word)
-      DwInst(SPM),   // slow??               
+      DwInst(SPM),      // slow??               
       DwInst(0x9632),      // adiw Z,2
     };
 
@@ -453,7 +487,6 @@ void WriteFlash(u16 addr, const u8 *buf, int length) {
  
   printf("\n");
 }
-
 
 u8 DwReadEEPROM(int addr) {
   #define EERE 1  // EEprom ReadEnable
@@ -801,17 +834,35 @@ bool findDeviceType() {
 	}
 }
 
+void checkSignature() {
+	int sig = getSignature();
+	printf("%X\n", sig); // set deviceType  TODO
+	if (sig != 0x930B) exit(-5);
+}
+
+
+u8 buf[MaxSRamSize];
+
+void sramTest() {
+  DwReadData(SRAM, 0x60, 32, buf);
+	buf[0] = 'N';
+	DwWriteSRAM(0x60, 1, buf);
+	DwReadData(SRAM, 0x60, 32, buf + 1);
+}
+
+
 int main(int argc, char* argv[]) {
 	openSerial();  
 	adjustToDWireBaud();
 	findDeviceType();
+	
+	checkSignature();
+	// sramTest();
 
 	// baudTest();
 	// setRandomBaud();
-#if 0
-	 setOsccal(0xFF);
-	 adjustToDWireBaud();
-#endif
+	// setOsccal(0xF0); adjustToDWireBaud();
+
 
   if (argc > 1) {
 		char hexPath[256];
@@ -836,10 +887,7 @@ int main(int argc, char* argv[]) {
 	stepTo(0, 5);
 
 	setBaudDivisor(5); // 5, 6 OK  4, 3 -> signature, LoadPageBuffer echo errors
-
-	int sig = getSignature();
-	printf("%X\n", sig); // set deviceType  TODO
-	if (sig != 0x930B) exit(-5);
+	checkSignature();
 
   WriteFlash(0, flashBuffer, maxAddr);
 
