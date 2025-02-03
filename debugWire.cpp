@@ -193,15 +193,15 @@ enum {MaxFlashPageSize = 128, MaxFlashSize = 32768, MaxSRamSize = 2048};
 #define littleEnd(w) lo(w), hi(w)
 #define DwSetPC(pc) 0xD0, AddrFlag() | hi(pc), lo(pc)
 #define DwSetBP(bp) 0xD1, AddrFlag() | lo(bp), lo(bp)
-#define DwInst(inst) 0x64, 0xD2, hi(inst), lo(inst), 0x23
-#define DwSlowInst(inst) 0xD2, hi(inst), lo(inst), 0x33
+#define DwInst(inst) 0x64, 0xD2, hi(inst), lo(inst), 0x23 /* can be slow?? */
+#define DwSlowInst(inst) 0xD2, hi(inst), lo(inst), 0x33  /* break on completion */
 #define DwIn(reg, ioreg)  DwInst(0xB000 | ((ioreg << 5) & 0x600) | ((reg << 4) & 0x01F0) | (ioreg & 0x000F))
 #define DwOut(ioreg, reg) DwInst(0xB800 | ((ioreg << 5) & 0x600) | ((reg << 4) & 0x01F0) | (ioreg & 0x000F))
 #define DwSetReg(reg, val) DwIn(reg, DWDRreg()), (val)
 #define DwGetReg(reg) DwOut(DWDRreg(), reg)
-#define DwSetRegs(first, count)  0x66, DwSetPC(first), DwSetBP(first + count), 0xC2, 5, 0x20 // followed by count bytes of data
+#define DwSetRegs(first, count)  0x66, DwSetPC(first), DwSetBP(first + count), 0xC2, 5, 0x20 /* followed by count bytes of data */
 #define DwSetIoreg(reg, val) DwSetReg(0, val), DwOut(reg, 0)
-#define DwSetZ(z) DwSetReg(30, lo(z)), DwSetReg(31, hi(z))   // Z :: r31:r30
+#define DwSetZ(z) DwSetReg(30, lo(z)), DwSetReg(31, hi(z))  /* Z :: r31:r30 */
 
 bool DwSend(const u8* cmds, int len) {
   rxFlush();
@@ -213,10 +213,17 @@ bool DwSend(const u8* cmds, int len) {
 	u8 echo[256];
 	DWORD gotBytes;
 	ReadFile(hCom, echo, len, &gotBytes, NULL);
-	int echoErr = memcmp(cmds, echo, len);
-	if (echoErr)
-		printf("Echo! ");
-	return !echoErr;
+	if (!memcmp(cmds, echo, len)) 
+		return true;
+
+	printf("Echo!:\n");
+	for (int p = 0; p < len; ++p)
+		printf("%2X ", cmds[p]);
+	printf("\n");
+	for (int p = 0; p < len; ++p)
+		printf("%2X ", echo[p]);
+	printf("\n");
+	return false;
 }
 
 void DwSend(const u8 cmd) {
@@ -353,7 +360,7 @@ void LoadPageBuffer(u16 addr, const u8* buf) {
       DwSetReg(0, *buf++), // r0 := low byte,
 			DwSetReg(1, *buf++), // r1 := high byte
       DwOut(SPMCSR, 29),   // out SPMCSR,r29 = SPMEN (write next page buffer word)
-      DwInst(SPM),                  
+      DwInst(SPM),   // slow??               
       DwInst(0x9632),      // adiw Z,2
     };
 
@@ -714,6 +721,7 @@ bool loadHex() {
 }
 
 u16 getSignature() {  
+	rxFlush();
   DwSend(0xF3);  // F3..FF = read signature;  (just start bit)
 
   u16 sig = DwReadWord();
@@ -743,8 +751,6 @@ void setBaudDivisor(int log2divisor) { // 3..7
 	WriteFile(hCom, &Sync, 1, NULL, NULL);
 
 	DwSync();
-  Sleep(1);
-	commErrs(true);
 }
 
 
@@ -802,6 +808,10 @@ int main(int argc, char* argv[]) {
 
 	// baudTest();
 	// setRandomBaud();
+#if 0
+	 setOsccal(0xFF);
+	 adjustToDWireBaud();
+#endif
 
   if (argc > 1) {
 		char hexPath[256];
@@ -816,12 +826,13 @@ int main(int argc, char* argv[]) {
   } else hexFile = stdin;
   loadHex();
 
-#if 0 // force page write for baud test
+#ifdef _DEBUG // force page write for baud test
   time_t secs; time(&secs);
 	maxAddr += 2 * PageSize(); // beyond executable code
   flashBuffer[maxAddr - (secs & (PageSize() - 1))] = 0xFF - (1 << ((secs >> 6) & 7));  // one bit low
 #endif
 
+	printf("\n");
 	stepTo(0, 5);
 
 	setBaudDivisor(5); // 5, 6 OK  4, 3 -> signature, LoadPageBuffer echo errors
