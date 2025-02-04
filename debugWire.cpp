@@ -331,7 +331,7 @@ void RenableRWW(void) {
 
 enum {SRAM = 0, Regs = 1, Flash = 2, Write = 4}; // region | Write
 
-// Do not read/write Reg addresses 30, 31 (Z), or DWDR as these interfere
+// Read/write addresses 30, 31 (Z), or DWDR interfere
 void DwReadWriteRegion(u8 region, int addr, int len) {
 	u8 readWriteRegion[] = {
 		DwSetZ(addr),
@@ -342,12 +342,11 @@ void DwReadWriteRegion(u8 region, int addr, int len) {
 	DwSend(readWriteRegion, sizeof readWriteRegion);
 }
 
-void DwReadData(u8 region, int addr, int len, u8 *buf) {
+void DwReadData(u8 region, int addr, int len, u8 *buf) { 
 	DwReadWriteRegion(region, addr, len);
-	Sleep(16); // ??
 	DWORD gotBytes;
 	ReadFile(hCom, buf, len, &gotBytes, NULL);
-	if (gotBytes != len) printf("Got %d! ", gotBytes);
+	if (gotBytes != len) printf("Got %d! ", gotBytes); // interference at 0x42 = DWDRaddr() = 66
 }
 
 void DwWriteData(u8 region, int addr, int len, u8* buf) {  // SRAM or Regs
@@ -355,7 +354,7 @@ void DwWriteData(u8 region, int addr, int len, u8* buf) {  // SRAM or Regs
 	DwSend(buf, len);
 }
 
-void DwWriteSRAM(int addr, int len, const u8 *buf) {
+void DwWriteSRAM(int addr, int len, const u8 *buf) { //uses Z (r32:30) and r16
 	u8 writeSRAM[] = {
 		DwSetZ(addr),
 		DwSetBP(3),
@@ -843,11 +842,9 @@ void checkSignature() {
 
 u8 buf[MaxSRamSize];
 
-void sramTest() {
-  DwReadData(SRAM, 0x60, 32, buf);
-	buf[0] = 'N';
-	DwWriteSRAM(0x60, 1, buf);
-	DwReadData(SRAM, 0x60, 32, buf + 1);
+void readSRAM() {
+  DwReadData(SRAM, 0, DWDRaddr(), buf); 
+	DwReadData(SRAM, DWDRaddr() + 1, SramSize() - (DWDRaddr() + 1), buf + DWDRaddr() + 1);
 }
 
 
@@ -857,7 +854,6 @@ int main(int argc, char* argv[]) {
 	findDeviceType();
 	
 	checkSignature();
-	// sramTest();
 
 	// baudTest();
 	// setRandomBaud();
@@ -888,6 +884,7 @@ int main(int argc, char* argv[]) {
 
 	setBaudDivisor(5); // 5, 6 OK  4, 3 -> signature, LoadPageBuffer echo errors
 	checkSignature();
+	readSRAM();
 
   WriteFlash(0, flashBuffer, maxAddr);
 
